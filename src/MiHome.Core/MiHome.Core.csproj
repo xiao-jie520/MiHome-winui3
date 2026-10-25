@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>MiHome.Core</RootNamespace>
+    <Description>MiHome-Windows WinUI3 重构版核心层：米家协议客户端、规格解析、本地存储与定时调度</Description>
+  </PropertyGroup>
+
+</Project>

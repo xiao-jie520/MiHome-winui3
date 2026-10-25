@@ -1,0 +1,39 @@
+<Page
+    x:Class="MiHome.App.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="8" MaxWidth="720" HorizontalAlignment="Left" Padding="0,0,0,24">
+
+            <TextBlock Text="设置" FontSize="24" FontWeight="SemiBold" Margin="0,8,0,12" />
+
+            <TextBlock Text="外观" FontSize="16" FontWeight="SemiBold" Opacity="0.8" Margin="0,8,0,4" />
+            <ComboBox x:Name="ThemeCombo" Header="主题配色" MinWidth="220" SelectionChanged="Theme_SelectionChanged">
+                <ComboBoxItem Content="跟随系统" Tag="system" />
+                <ComboBoxItem Content="浅色" Tag="light" />
+                <ComboBoxItem Content="深色" Tag="dark" />
+            </ComboBox>
+            <ComboBox x:Name="AccentCombo" Header="主题色" MinWidth="220" SelectionChanged="Accent_SelectionChanged" Margin="0,8,0,0" />
+
+            <TextBlock Text="应用功能" FontSize="16" FontWeight="SemiBold" Opacity="0.8" Margin="0,16,0,4" />
+            <ToggleSwitch x:Name="MinimizeTrayToggle" Header="关闭窗口时最小化到托盘" Toggled="MinimizeTray_Toggled" />
+            <ToggleSwitch x:Name="StartMinimizedToggle" Header="启动时静默启动（不显示主界面）" Toggled="StartMinimized_Toggled" />
+            <ToggleSwitch x:Name="HideNoFuncToggle" Header="隐藏无可控制功能的设备" Toggled="HideNoFunc_Toggled" />
+            <ToggleSwitch x:Name="AutostartToggle" Header="开机自启动（当前用户）" Toggled="Autostart_Toggled" />
+
+            <TextBlock Text="小爱语音" FontSize="16" FontWeight="SemiBold" Opacity="0.8" Margin="0,16,0,4" />
+            <ComboBox x:Name="SpeakerCombo" Header="默认输出音箱（空 = 第一个在线音箱）" MinWidth="320" SelectionChanged="Speaker_SelectionChanged" />
+
+            <TextBlock Text="其他" FontSize="16" FontWeight="SemiBold" Opacity="0.8" Margin="0,16,0,4" />
+            <ToggleSwitch x:Name="CheckUpdateToggle" Header="启动时自动检查新版本" Toggled="CheckUpdate_Toggled" />
+            <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,4,0,0">
+                <Button Content="手动检查更新" Click="CheckUpdate_Click" />
+                <TextBlock x:Name="UpdateText" VerticalAlignment="Center" Opacity="0.7" />
+            </StackPanel>
+
+            <TextBlock x:Name="VersionText" Margin="0,20,0,0" Opacity="0.5"
+                       Text="米家控制台 (WinUI3 重构版) v1.0.0 · 基于 MIoT 协议 · GPL-3.0" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,19 @@
+# Build outputs
+bin/
+obj/
+publish/
+artifacts/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+desktop.ini
+
+# MSI build intermediates
+installer/*.wixobj
+installer/*.wixpdb

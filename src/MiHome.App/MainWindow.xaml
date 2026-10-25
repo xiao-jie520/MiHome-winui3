@@ -1,0 +1,52 @@
+<Window
+    x:Class="MiHome.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    Title="米家控制台">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <muxc:NavigationView x:Name="Nav"
+                             Grid.Row="2"
+                             IsBackButtonVisible="Collapsed"
+                             PaneDisplayMode="Left"
+                             IsSettingsVisible="False"
+                             OpenPaneLength="180"
+                             SelectionChanged="Nav_SelectionChanged">
+            <muxc:NavigationView.MenuItems>
+                <muxc:NavigationViewItem Content="设备" Tag="devices" Icon="People" />
+                <muxc:NavigationViewItem Content="场景" Tag="scenes" Icon="Calendar" />
+                <muxc:NavigationViewItem Content="定时" Tag="schedules" Icon="Clock" />
+                <muxc:NavigationViewItem Content="设置" Tag="settings" Icon="Setting" />
+            </muxc:NavigationView.MenuItems>
+            <muxc:NavigationView.FooterMenuItems>
+                <muxc:NavigationViewItem x:Name="LoginItem" Content="扫码登录" Tag="login" Visibility="Collapsed" Icon="AddFriend" />
+                <muxc:NavigationViewItem x:Name="VoiceItem" Content="小爱语音" Tag="voice" Icon="Microphone" Tapped="VoiceItem_Tapped" />
+            </muxc:NavigationView.FooterMenuItems>
+
+            <Grid Padding="16,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <muxc:InfoBar x:Name="Toast"
+                              Grid.Row="0"
+                              IsOpen="False"
+                              Severity="Informational"
+                              Title=""
+                              Message=""
+                              CloseButtonClick="Toast_CloseButtonClick"
+                              Margin="0,0,0,8" />
+
+                <Frame x:Name="ContentFrame" Grid.Row="1" />
+            </Grid>
+        </muxc:NavigationView>
+    </Grid>
+</Window>
