@@ -21,7 +21,7 @@
 
 ## 安装
 
-下载 `MiHome-Setup-<版本>.msi` 双击安装即可：
+从 [Releases](https://github.com/xiao-jie520/MiHome-winui3/releases/latest) 下载 `MiHome-Setup-<版本>.msi` 双击安装即可：
 
 - **每用户安装**到 `%LOCALAPPDATA%\Programs\MiHome`，**无需管理员权限**，不弹 UAC
 - 自动创建开始菜单与桌面快捷方式，卸载从「设置 → 应用」或开始菜单右键完成
