@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?ifndef Version ?>
+<?define Version = "1.0.0" ?>
+<?endif ?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!--
+    米家控制台（MiHome Windows WinUI3 版）安装包
+    - 每用户安装到 %LOCALAPPDATA%\Programs\MiHome，无需管理员权限
+    - 支持覆盖升级（MajorUpgrade），卸载自动清理
+  -->
+  <Package
+      Name="米家控制台"
+      Manufacturer="MiHome-Windows Contributors"
+      Version="$(var.Version)"
+      UpgradeCode="7F3C1A90-4D2E-4B77-9C51-8E6A2B3D4F10"
+      Scope="perUser"
+      Compressed="yes"
+      Language="2052"
+      Codepage="936">
+
+    <SummaryInformation Description="米家设备的 Windows 桌面控制端（WinUI 3）" Manufacturer="MiHome-Windows Contributors" />
+
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的米家控制台，请先卸载后再安装。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="AppIcon" SourceFile="publish\Assets\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="MiHome" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MiHomeMenuFolder" Name="米家控制台" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Feature Id="MainFeature" Title="米家控制台" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- 应用全部文件（自包含发布目录） -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="..\publish\**" />
+    </ComponentGroup>
+
+    <!-- 开始菜单快捷方式 -->
+    <Component Id="StartMenuShortcut" Directory="MiHomeMenuFolder" Guid="A1B2C3D4-1111-4A2B-9C3D-5E6F70819203">
+      <Shortcut Id="StartMenuShortcutEntry"
+                Name="米家控制台"
+                Description="米家设备的 Windows 桌面控制端"
+                Target="[INSTALLFOLDER]MiHome.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon" />
+      <RemoveFolder Id="RemoveMiHomeMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\MiHome-Windows\WinUI3" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- 桌面快捷方式 -->
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="A1B2C3D4-2222-4A2B-9C3D-5E6F70819203">
+      <Shortcut Id="DesktopShortcutEntry"
+                Name="米家控制台"
+                Description="米家设备的 Windows 桌面控制端"
+                Target="[INSTALLFOLDER]MiHome.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon" />
+      <RegistryValue Root="HKCU" Key="Software\MiHome-Windows\WinUI3" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+  </Package>
+</Wix>

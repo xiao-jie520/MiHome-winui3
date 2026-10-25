@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: 解析版本号
+        id: version
+        shell: pwsh
+        run: |
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "1.0.0" }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: 安装 WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+
+      - name: 构建发布目录
+        shell: pwsh
+        run: dotnet publish src/MiHome.App/MiHome.App.csproj -c Release -r win-x64 --self-contained -p:Platform=x64 -o publish
+
+      - name: 生成 MSI 安装包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          wix build installer/Product.wxs -ext WixToolset.UI.wixext -culture zh-CN -d "Version=${{ steps.version.outputs.value }}" -o "artifacts/MiHome-Setup-${{ steps.version.outputs.value }}.msi"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiHome-Setup-${{ steps.version.outputs.value }}
+          path: artifacts/*.msi
+          retention-days: 30
+
+      - name: 发布 Release（仅打 tag 时）
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.msi
+          generate_release_notes: true

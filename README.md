@@ -19,14 +19,35 @@
 - **开机自启动**：HKCU Run 注册表
 - **版本检测**：GitHub Releases 检查
 
+## 安装
+
+下载 `MiHome-Setup-<版本>.msi` 双击安装即可：
+
+- **每用户安装**到 `%LOCALAPPDATA%\Programs\MiHome`，**无需管理员权限**，不弹 UAC
+- 自动创建开始菜单与桌面快捷方式，卸载从「设置 → 应用」或开始菜单右键完成
+- 再次安装新版本会自动覆盖升级（MajorUpgrade）
+
 ## 构建
 
 要求 Windows 10 1809+ 与 .NET 8 SDK。
+
+### 只构建程序
 
 ```powershell
 dotnet build src/MiHome.App/MiHome.App.csproj -p:Platform=x64 -c Release
 # 输出：src/MiHome.App/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64/MiHome.exe
 ```
+
+### 打包 MSI 安装程序
+
+```powershell
+pwsh ./build-installer.ps1            # 默认 1.0.0
+pwsh ./build-installer.ps1 -Version 1.0.1
+# 输出：artifacts/MiHome-Setup-<版本>.msi
+```
+
+脚本自动完成：`dotnet publish` 自包含发布 → 安装 WiX 5（dotnet tool，免 Visual Studio）→ 生成 MSI。
+CI（`.github/workflows/build.yml`）在每次推送构建 MSI 并留存产物，打 `v*` tag 时自动发布 Release 附件。
 
 ## 项目结构
 
