@@ -46,29 +46,27 @@ public sealed class MijiaApiClient : IDisposable
     private static readonly string AuthPath = Path.Combine(AuthDir, "auth.json");
 
     private readonly HttpClient _http;
-    private readonly CookieContainer _cookies = new();
     private readonly object _lock = new();
 
     public Dictionary<string, JsonElement> AuthData { get; private set; } = new();
 
-    private long _availableCacheTime;
-    private bool? _availableCache;
+    /// <summary>调试日志钩子：设置后输出加密请求/响应原文（排障用）。</summary>
+    public static Action<string>? DebugLog { get; set; }
+
 
     public MijiaApiClient()
     {
         LoadAuth();
         var handler = new HttpClientHandler
         {
-            CookieContainer = _cookies,
-            UseCookies = true,
+            // 不交给 CookieContainer：小米把 serviceToken 写在 .sts.api.mijia.tech 域，
+            // 域匹配失败会静默丢掉整个 Cookie 头（实测 401 auth error）。
+            // 上游 Python 也是每次请求手工拼 Cookie 头，这里照做。
+            UseCookies = false,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
             AllowAutoRedirect = false, // get_icon 需要自己读 302 Location
         };
         _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
-        if (AuthData.Count > 0)
-        {
-            InitSessionCookies();
-        }
     }
 
     public static string SpecCacheDir => AuthDir;
@@ -176,58 +174,28 @@ public sealed class MijiaApiClient : IDisposable
         return $"GMT{sign}{abs.Hours:00}:{abs.Minutes:00}";
     }
 
-    private void InitSessionCookies()
+    /// <summary>按上游 _init_session 的格式拼 Cookie 头（每次请求现拼，避免陈旧值）。</summary>
+    private string BuildCookieHeader()
     {
-        var baseUri = new Uri("https://api.mijia.tech/");
-        var accountUri = new Uri("https://account.xiaomi.com/");
-
-        // 用 SetCookies 覆盖写：重新登录后 token 已变，旧 cookie 必须被替换，
-        // 否则同名 Cookie 添加会抛异常（被吞掉）而残留的是过期 token。
-        void Seed(Uri uri, params (string Name, string Value)[] cookies)
-        {
-            try
-            {
-                var text = string.Join("; ", cookies
-                    .Where(c => !string.IsNullOrEmpty(c.Value))
-                    .Select(c => $"{c.Name}={c.Value}"));
-                if (text.Length > 0)
-                {
-                    _cookies.SetCookies(uri, text);
-                }
-            }
-            catch
-            {
-                // 非法 cookie 值直接忽略，不阻断登录流程
-            }
-        }
-
         var serviceToken = AuthStr("serviceToken") ?? "";
         var cUserId = AuthStr("cUserId") ?? AuthStr("userId") ?? "";
         var isDst = TimeZoneInfo.Local.IsDaylightSavingTime(DateTime.Now) ? 1 : 0;
-
-        Seed(baseUri,
-            ("cUserId", cUserId),
-            ("yetAnotherServiceToken", serviceToken),
-            ("serviceToken", serviceToken),
-            ("timezone_id", TimeZoneInfo.Local.Id),
-            ("timezone", GmtOffset()),
-            ("is_daylight", isDst.ToString()),
-            ("dst_offset", (isDst * 60 * 60 * 1000).ToString()),
-            ("channel", "MI_APP_STORE"),
-            ("countryCode", "CN"),
-            ("PassportDeviceId", DeviceId),
-            ("locale", Locale));
-
-        Seed(accountUri,
-            ("deviceId", DeviceId),
-            ("userId", AuthStr("userId") ?? ""),
-            ("passToken", AuthStr("passToken") ?? ""));
+        return $"cUserId={cUserId};" +
+               $"yetAnotherServiceToken={serviceToken};" +
+               $"serviceToken={serviceToken};" +
+               $"timezone_id={TimeZoneInfo.Local.Id};" +
+               $"timezone={GmtOffset()};" +
+               $"is_daylight={isDst};" +
+               $"dst_offset={isDst * 60 * 60 * 1000};" +
+               $"channel=MI_APP_STORE;" +
+               $"countryCode=CN;" +
+               $"PassportDeviceId={DeviceId};" +
+               $"locale={Locale}";
     }
 
     private void AddServiceHeaders(HttpRequestMessage req)
     {
         req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-        req.Headers.TryAddWithoutValidation("accept-encoding", "identity");
         req.Headers.TryAddWithoutValidation("Content-Type", "application/x-www-form-urlencoded");
         req.Headers.TryAddWithoutValidation("miot-accept-encoding", "GZIP");
         req.Headers.TryAddWithoutValidation("miot-encrypt-algorithm", "ENCRYPT-RC4");
@@ -266,6 +234,63 @@ public sealed class MijiaApiClient : IDisposable
         _ => el.GetRawText(),
     };
 
+    /// <summary>
+    /// 从响应头收集 Set-Cookie 到认证数据。
+    /// 不能只按域名从 CookieContainer 取：小米把 serviceToken 写在
+    /// <c>.sts.api.mijia.tech</c> 域，按 account/api 域取会全部漏掉
+    /// （上游 Python 用 Session.cookies.get_dict() 拿的是全部 cookie）。
+    /// </summary>
+    private void HarvestCookies(HttpResponseMessage resp, Dictionary<string, string>? jar = null)
+    {
+        if (!resp.Headers.TryGetValues("Set-Cookie", out var values))
+        {
+            return;
+        }
+        foreach (var raw in values)
+        {
+            var pair = raw.Split(';', 2)[0];
+            int idx = pair.IndexOf('=');
+            if (idx <= 0)
+            {
+                continue;
+            }
+            var name = pair[..idx].Trim();
+            var value = pair[(idx + 1)..].Trim();
+            if (name.Length == 0 || value.Length == 0)
+            {
+                continue; // 删除型 cookie 不覆盖已保存值
+            }
+            AuthData[name] = JsonSerializer.SerializeToElement(value);
+            if (jar != null)
+            {
+                jar[name] = value;
+            }
+        }
+    }
+
+    /// <summary>把会话内收集到的 cookie 拼成请求头（模拟 requests 的 cookie jar 回放）。</summary>
+    private static string JarHeader(Dictionary<string, string> jar)
+        => jar.Count == 0 ? "" : string.Join("; ", jar.Select(kv => $"{kv.Key}={kv.Value}"));
+
+    /// <summary>service 登录成功后补一次 ssecurity（部分响应只在 body 里给）。</summary>
+    private void ApplySsecurity(Dictionary<string, object?> data)
+    {
+        if (!data.TryGetValue("ssecurity", out var ssecObj))
+        {
+            return;
+        }
+        var ssec = ssecObj switch
+        {
+            JsonElement je => je.GetString() ?? "",
+            string s => s,
+            _ => ssecObj?.ToString() ?? "",
+        };
+        if (ssec.Length > 0)
+        {
+            AuthData["ssecurity"] = JsonSerializer.SerializeToElement(ssec);
+        }
+    }
+
     /// <summary>serviceLogin 取 location；code==0 时跟随 location 收下 cookie 即刷新成功。</summary>
     private async Task<Dictionary<string, object?>> GetLocationAsync()
     {
@@ -283,6 +308,8 @@ public sealed class MijiaApiClient : IDisposable
         {
             throw new LoginException($"登录服务返回 HTTP {(int)resp.StatusCode}");
         }
+        var jar = new Dictionary<string, string>();
+        HarvestCookies(resp, jar);
         var data = ParseServiceRet(body);
 
         if (data.TryGetValue("code", out var codeEl) && Convert.ToInt64(codeEl) == 0 &&
@@ -291,24 +318,16 @@ public sealed class MijiaApiClient : IDisposable
             // 跟随 location 完成服务登录，收下 serviceToken cookie
             var follow = new HttpRequestMessage(HttpMethod.Get, locUrl);
             follow.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+            if (JarHeader(jar) is { Length: > 0 } followCookie)
+            {
+                follow.Headers.TryAddWithoutValidation("Cookie", followCookie);
+            }
             var followResp = await _http.SendAsync(follow);
             var followBody = await followResp.Content.ReadAsStringAsync();
             if (followResp.StatusCode == HttpStatusCode.OK && followBody.Trim() == "ok")
             {
-                foreach (var c in _cookies.GetCookies(new Uri("https://account.xiaomi.com/")).Cast<Cookie>())
-                {
-                    AuthData[c.Name] = JsonSerializer.SerializeToElement(c.Value);
-                }
-                if (data.TryGetValue("ssecurity", out var ssecObj))
-                {
-                    var ssec = ssecObj switch
-                    {
-                        JsonElement je => je.GetString() ?? "",
-                        string s => s,
-                        _ => ssecObj?.ToString() ?? "",
-                    };
-                    AuthData["ssecurity"] = JsonSerializer.SerializeToElement(ssec);
-                }
+                HarvestCookies(followResp);
+                ApplySsecurity(data);
                 return new Dictionary<string, object?> { ["code"] = 0L, ["message"] = "刷新Token成功" };
             }
         }
@@ -341,36 +360,27 @@ public sealed class MijiaApiClient : IDisposable
         }
     }
 
-    /// <summary>凭据仍有效则跳过刷新。</summary>
+    /// <summary>
+    /// 凭据是否可用：纯本地判断（有无 serviceToken + expireTime 是否过期）。
+    /// **绝不能在这里发网络请求**——上游原实现会 check_new_msg，配合 UI 线程的
+    /// 同步等待会形成死锁（continuation 要回 UI 线程，UI 线程却在等结果）。
+    /// </summary>
     public bool Available()
     {
-        string[] requiredKeys = { "ua", "ssecurity", "userId", "cUserId", "serviceToken" };
-        if (AuthData.Count == 0 || requiredKeys.Any(k => !AuthData.ContainsKey(k)))
+        if (!HasAuth)
         {
             return false;
         }
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        if (now - _availableCacheTime < 60)
+        if (AuthData.TryGetValue("expireTime", out var el) && el.ValueKind == JsonValueKind.Number)
         {
-            return _availableCache == true;
+            return el.GetInt64() > DateTimeOffset.Now.ToUnixTimeMilliseconds() + 60_000;
         }
-        try
-        {
-            CheckNewMsgAsync(refreshToken: false).GetAwaiter().GetResult();
-        }
-        catch
-        {
-            _availableCache = null;
-            _availableCacheTime = 0;
-            return false;
-        }        _availableCache = true;
-        _availableCacheTime = now;
         return true;
     }
 
-    public async Task RefreshTokenAsync()
+    public async Task RefreshTokenAsync(bool force = false)
     {
-        if (Available())
+        if (!force && Available())
         {
             return;
         }
@@ -379,7 +389,6 @@ public sealed class MijiaApiClient : IDisposable
             locationData.GetValueOrDefault("message")?.ToString() == "刷新Token成功")
         {
             SaveAuth();
-            InitSessionCookies();
             return;
         }
         throw new LoginException("刷新Token失败，请重新登录");
@@ -395,7 +404,6 @@ public sealed class MijiaApiClient : IDisposable
             locationData.GetValueOrDefault("message")?.ToString() == "刷新Token成功")
         {
             SaveAuth();
-            InitSessionCookies();
             return null;
         }
 
@@ -438,8 +446,7 @@ public sealed class MijiaApiClient : IDisposable
         }
         var sessionHandler = new HttpClientHandler
         {
-            CookieContainer = new CookieContainer(),
-            UseCookies = true,
+            UseCookies = false, // 同上：cookie 一律由 Set-Cookie 头自己收集、手工回放
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
         };
         using var session = new HttpClient(sessionHandler) { Timeout = TimeSpan.FromSeconds(120) };
@@ -451,6 +458,8 @@ public sealed class MijiaApiClient : IDisposable
         {
             throw new LoginException($"扫码轮询失败：HTTP {(int)lpResp.StatusCode}");
         }
+        var jar = new Dictionary<string, string>();
+        HarvestCookies(lpResp, jar);
         var lpData = ParseServiceRet(lpBody);
         if (lpData.TryGetValue("code", out var codeEl) && Convert.ToInt64(codeEl) != 0)
         {
@@ -468,45 +477,59 @@ public sealed class MijiaApiClient : IDisposable
         {
             var cbReq = new HttpRequestMessage(HttpMethod.Get, callbackUrl);
             cbReq.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-            await session.SendAsync(cbReq);
-            // 服务登录成功后 cookie 可能落在 xiaomi.com / sts.api.io.mi.com 等多个域，
-            // 全部收下（与 requests Session.cookies.get_dict() 一致）
-            foreach (var uri in new[]
+            if (JarHeader(jar) is { Length: > 0 } cbCookie)
             {
-                "https://account.xiaomi.com/",
-                "https://sts.api.io.mi.com/",
-                "https://api.mijia.tech/",
-            })
-            {
-                foreach (var c in sessionHandler.CookieContainer.GetCookies(new Uri(uri)).Cast<Cookie>())
-                {
-                    AuthData[c.Name] = JsonSerializer.SerializeToElement(c.Value);
-                }
+                cbReq.Headers.TryAddWithoutValidation("Cookie", cbCookie);
             }
+            using var cbResp = await session.SendAsync(cbReq);
+            // serviceToken 落在 .sts.api.mijia.tech 域：必须按 Set-Cookie 头收集，
+            // 只按域从 CookieContainer 取会漏（踩过，登录后仍判定未登录）
+            HarvestCookies(cbResp);
         }
         AuthData["expireTime"] = JsonSerializer.SerializeToElement(
             DateTimeOffset.Now.AddDays(30).ToUnixTimeMilliseconds());
+
+        // 没有 serviceToken 后续所有 API 都会 401，宁可当场报错也不要在设备页静默失败
+        if (AuthStr("serviceToken") is not { Length: > 0 })
+        {
+            throw new LoginException("登录已确认，但未获取到 serviceToken 凭据，请刷新二维码重试");
+        }
+
         SaveAuth();
-        InitSessionCookies();
     }
 
     public void Logout()
     {
         AuthData = new Dictionary<string, JsonElement>();
         try { File.Delete(AuthPath); } catch { /* ignore */ }
-        _availableCache = null;
-        _availableCacheTime = 0;
     }
 
     // ---------- 加密请求 ----------
 
-    /// <summary>执行加密 POST 请求并返回 result 字段。</summary>
+    /// <summary>
+    /// 执行加密 POST 请求并返回 result 字段。
+    /// 服务端返回 auth error（code=2）时强制刷新 token 并重试一次，
+    /// 避免凭据到期后所有操作静默失败。
+    /// </summary>
     public async Task<JsonElement> RequestAsync(string uri, object data, bool refreshToken = true)
     {
         if (refreshToken)
         {
             await RefreshTokenAsync();
         }
+        try
+        {
+            return await SendEncryptedAsync(uri, data);
+        }
+        catch (ApiException exc) when (exc.Code == 2 || exc.Message.Contains("auth error", StringComparison.OrdinalIgnoreCase))
+        {
+            await RefreshTokenAsync(force: true);
+            return await SendEncryptedAsync(uri, data);
+        }
+    }
+
+    private async Task<JsonElement> SendEncryptedAsync(string uri, object data)
+    {
         var ssecurity = AuthStr("ssecurity") ?? throw new LoginException("未登录或凭据缺失，请重新扫码登录");
 
         var jsonData = JsonSerializer.Serialize(data, new JsonSerializerOptions
@@ -525,21 +548,19 @@ public sealed class MijiaApiClient : IDisposable
         using var content = new FormUrlEncodedContent(parameters);
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         AddServiceHeaders(req);
+        req.Headers.TryAddWithoutValidation("Cookie", BuildCookieHeader());
         // FormUrlEncodedContent 会覆盖 Content-Type 头，这里统一改写
         req.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-www-form-urlencoded");
 
         using var resp = await _http.SendAsync(req);
-        var body = await resp.Content.ReadAsStringAsync();
-        JsonElement retData;
-        try
+        var raw = await resp.Content.ReadAsByteArrayAsync();
+        var body = DecodeBody(raw, resp, ssecurity, nonce);
+        if (DebugLog != null)
         {
-            retData = JsonSerializer.Deserialize<JsonElement>(body);
+            var cookieHeader = req.Headers.TryGetValues("Cookie", out var cks) ? string.Join("; ", cks) : "(none)";
+            DebugLog($"POST {url}\nCookie: {cookieHeader}\nBody: {body}\nStatus: {(int)resp.StatusCode} len={body.Length}");
         }
-        catch (JsonException)
-        {
-            var dec = MiCrypto.DecryptResponse(ssecurity, nonce, body.Trim());
-            retData = JsonSerializer.Deserialize<JsonElement>(dec);
-        }
+        JsonElement retData = JsonSerializer.Deserialize<JsonElement>(body);
 
         int code = retData.ValueKind == JsonValueKind.Object && retData.TryGetProperty("code", out var c)
             ? c.GetInt32() : 0;
@@ -560,6 +581,46 @@ public sealed class MijiaApiClient : IDisposable
             throw new ApiException(code, msg);
         }
         return result;
+    }
+
+
+    /// <summary>
+    /// 解密/解压响应体：
+    /// 1) 直接是 JSON → 原样；
+    /// 2) gzip 明文 → 解压；
+    /// 3) base64 RC4 密文 → 解密（结果可能再 gzip）。
+    /// 上游 decrypt() 同逻辑，只是 Python 用解码异常判断分支。
+    /// </summary>
+    private static string DecodeBody(byte[] raw, HttpResponseMessage resp, string ssecurity, string nonce)
+    {
+        byte[] data = raw;
+        if (IsGzip(data) || resp.Content.Headers.ContentEncoding.Contains("gzip"))
+        {
+            data = Gunzip(data);
+        }
+        var text = Encoding.UTF8.GetString(data).Trim();
+        if (text.StartsWith('{') || text.StartsWith('['))
+        {
+            return text;
+        }
+        // RC4 密文（base64）
+        var decrypted = MiCrypto.DecryptRc4Raw(MiCrypto.GetSignedNonce(ssecurity, nonce), text);
+        if (IsGzip(decrypted))
+        {
+            decrypted = Gunzip(decrypted);
+        }
+        return Encoding.UTF8.GetString(decrypted);
+    }
+
+    private static bool IsGzip(byte[] data) => data.Length >= 2 && data[0] == 0x1F && data[1] == 0x8B;
+
+    private static byte[] Gunzip(byte[] data)
+    {
+        using var input = new MemoryStream(data);
+        using var gzip = new System.IO.Compression.GZipStream(input, System.IO.Compression.CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 
     /// <summary>把 System.Text.Json 的输出压缩为 Python 风格的紧凑格式（去空格）。</summary>
@@ -768,6 +829,7 @@ public sealed class MijiaApiClient : IDisposable
             using var content = new FormUrlEncodedContent(parameters);
             using var req = new HttpRequestMessage(HttpMethod.Post, ApiBaseUrl + uri) { Content = content };
             AddServiceHeaders(req);
+            req.Headers.TryAddWithoutValidation("Cookie", BuildCookieHeader());
             req.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-www-form-urlencoded");
             using var resp = await _http.SendAsync(req);
             if ((int)resp.StatusCode != 302)

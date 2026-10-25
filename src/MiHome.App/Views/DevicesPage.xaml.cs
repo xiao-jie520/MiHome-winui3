@@ -13,6 +13,7 @@ namespace MiHome.App.Views;
 public sealed partial class DevicesPage : Page
 {
     private readonly Dictionary<string, DeviceCard> _cards = new();
+    private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private CancellationTokenSource? _pollCts;
     private bool _loaded;
 
@@ -43,8 +44,7 @@ public sealed partial class DevicesPage : Page
             }
 
             BuildGroups(devices);
-            _ = RefreshPowerStatesAsync(devices.Select(d => d.Did).ToList());
-            _ = RefreshMetricsAsync(devices.Select(d => d.Did).ToList());
+            await RefreshAllAsync(devices.Select(d => d.Did).ToList());
         }
         catch (Exception exc)
         {
@@ -104,6 +104,7 @@ public sealed partial class DevicesPage : Page
             var wrap = new ItemsControl
             {
                 ItemsPanel = BuildCardPanel(),
+                HorizontalAlignment = HorizontalAlignment.Left,
             };
             foreach (var device in group)
             {
@@ -129,6 +130,10 @@ public sealed partial class DevicesPage : Page
 
     private void StartPolling()
     {
+        if (!App.Settings.AutoRefresh)
+        {
+            return; // 默认不自动轮询，用户可在设置里开启
+        }
         _pollCts?.Cancel();
         _pollCts = new CancellationTokenSource();
         var token = _pollCts.Token;
@@ -144,11 +149,7 @@ public sealed partial class DevicesPage : Page
                     {
                         continue;
                     }
-                    await DispatcherRunAsync(async () =>
-                    {
-                        await RefreshPowerStatesAsync(dids);
-                        await RefreshMetricsAsync(dids);
-                    });
+                    await DispatcherRunAsync(() => RefreshAllAsync(dids));
                 }
                 catch (TaskCanceledException)
                 {
@@ -178,6 +179,24 @@ public sealed partial class DevicesPage : Page
             }
         });
         await tcs.Task;
+    }
+
+    /// <summary>单飞刷新：已有一轮在跑时直接跳过，避免请求叠加与状态错乱。</summary>
+    private async Task RefreshAllAsync(List<string> dids)
+    {
+        if (!await _refreshLock.WaitAsync(0))
+        {
+            return;
+        }
+        try
+        {
+            await RefreshPowerStatesAsync(dids);
+            await RefreshMetricsAsync(dids);
+        }
+        finally
+        {
+            _refreshLock.Release();
+        }
     }
 
     private async Task RefreshPowerStatesAsync(List<string> dids)
@@ -265,6 +284,7 @@ public sealed class DeviceCard
         {
             Width = 480,
             MaxWidth = 560,
+            HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 0, 8, 8),
             Padding = new Thickness(12),
             CornerRadius = new CornerRadius(8),
@@ -308,8 +328,15 @@ public sealed class DeviceCard
         stack.Children.Add(_statusText);
         stack.Children.Add(_toggle);
 
-        // 整卡可点开详情
-        _root.PointerPressed += (_, _) => _openDetail(device);
+        // 整卡可点开详情；点开关本身时不要弹详情（否则一按开关就弹窗）
+        _root.PointerPressed += (_, e) =>
+        {
+            if (IsInside(e.OriginalSource as DependencyObject, _toggle))
+            {
+                return;
+            }
+            _openDetail(device);
+        };
         _root.Child = stack;
 
         UpdateOnline();
@@ -371,6 +398,20 @@ public sealed class DeviceCard
         {
             _metricsText.Opacity = 0.5;
         }
+    }
+
+    /// <summary>判断元素是否位于指定容器内（用于区分点卡片空白处与点开关）。</summary>
+    private static bool IsInside(DependencyObject? node, DependencyObject container)
+    {
+        while (node != null)
+        {
+            if (ReferenceEquals(node, container))
+            {
+                return true;
+            }
+            node = VisualTreeHelper.GetParent(node);
+        }
+        return false;
     }
 
     private void UpdateOnline()

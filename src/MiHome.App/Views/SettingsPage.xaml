@@ -19,6 +19,7 @@
             <TextBlock Text="应用功能" FontSize="16" FontWeight="SemiBold" Opacity="0.8" Margin="0,16,0,4" />
             <ToggleSwitch x:Name="MinimizeTrayToggle" Header="关闭窗口时最小化到托盘" Toggled="MinimizeTray_Toggled" />
             <ToggleSwitch x:Name="StartMinimizedToggle" Header="启动时静默启动（不显示主界面）" Toggled="StartMinimized_Toggled" />
+            <ToggleSwitch x:Name="AutoRefreshToggle" Header="自动刷新设备状态（每 5 秒）" Toggled="AutoRefresh_Toggled" />
             <ToggleSwitch x:Name="HideNoFuncToggle" Header="隐藏无可控制功能的设备" Toggled="HideNoFunc_Toggled" />
             <ToggleSwitch x:Name="AutostartToggle" Header="开机自启动（当前用户）" Toggled="Autostart_Toggled" />
 
@@ -33,7 +34,7 @@
             </StackPanel>
 
             <TextBlock x:Name="VersionText" Margin="0,20,0,0" Opacity="0.5"
-                       Text="米家控制台 (WinUI3 重构版) v1.0.1 · 基于 MIoT 协议 · GPL-3.0" />
+                       Text="米家控制台 (WinUI3 重构版) v1.0.2 · 基于 MIoT 协议 · GPL-3.0" />
         </StackPanel>
     </ScrollViewer>
 </Page>

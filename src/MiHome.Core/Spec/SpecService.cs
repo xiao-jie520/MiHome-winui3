@@ -14,7 +14,7 @@ namespace MiHome.Core.Spec;
 public sealed class SpecService
 {
     private const string DeviceUrl = "https://miot-spec.org/miot-spec-v2/instance";
-    private const int Version = 2;
+    private const int Version = 3;
 
     private readonly HttpClient _http;
     private readonly string _cacheDir;
@@ -123,7 +123,7 @@ public sealed class SpecService
                         }
                     }
                     string rw = (access.Contains("read") ? "r" : "") + (access.Contains("write") ? "w" : "");
-                    string name = prop.GetProperty("type").GetString()!.Split(':')[^1];
+                    string name = TypeShortName(prop.GetProperty("type").GetString() ?? "");
                     string desc = prop.GetProperty("description").GetString() ?? "";
                     if (prop.TryGetProperty("comment", out var comment) && comment.ValueKind == JsonValueKind.String)
                     {
@@ -167,7 +167,7 @@ public sealed class SpecService
                 foreach (var act in acts.EnumerateArray())
                 {
                     int aiid = act.GetProperty("iid").GetInt32();
-                    string name = act.GetProperty("type").GetString()!.Split(':')[^1];
+                    string name = TypeShortName(act.GetProperty("type").GetString() ?? "");
                     string desc = act.GetProperty("description").GetString() ?? "";
                     if (act.TryGetProperty("comment", out var comment) && comment.ValueKind == JsonValueKind.String)
                     {
@@ -185,6 +185,17 @@ public sealed class SpecService
         DeduplicateNames(info.Properties.Select(p => (object)p).ToList(), "Piid", p => ((SpecProp)p).Name, (p, n) => ((SpecProp)p).Name = n);
         DeduplicateNames(info.Actions.Select(a => (object)a).ToList(), "Aiid", a => ((SpecAction)a).Name, (a, n) => ((SpecAction)a).Name = n);
         return info;
+    }
+
+
+    /// <summary>
+    /// 从 spec URN 取短名：urn:miot-spec-v2:property:on:00000006:model:1 → "on"。
+    /// 注意是第 4 段（索引 3），不是最后一段（最后一段是版本号）。
+    /// </summary>
+    private static string TypeShortName(string urn)
+    {
+        var parts = urn.Split(':');
+        return parts.Length > 3 ? parts[3] : urn;
     }
 
     private static void DeduplicateNames(List<object> items, string iidKey,

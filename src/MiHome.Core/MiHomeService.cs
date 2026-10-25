@@ -22,12 +22,13 @@ public sealed partial class MiHomeService
     private readonly MijiaApiClient _api;
     private readonly SpecService _specService;
 
-    // did -> (model, spec_type, name) 索引
-    private readonly Dictionary<string, (string Model, string SpecType, string Name)> _deviceIndex = new();
-    // spec_type -> spec 内存缓存
-    private readonly Dictionary<string, SpecInfo?> _specCache = new();
+    // did -> (model, spec_type, name) 索引（UI 与轮询线程并发访问，必须用并发字典）
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Model, string SpecType, string Name)> _deviceIndex = new();
+    private readonly SemaphoreSlim _indexLock = new(1, 1);
+    // spec_type -> spec 内存缓存（并发字典：首屏加载与轮询会同时读）
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpecInfo?> _specCache = new();
     // spec_type -> 进行中的拉取任务（并发去重，不同 spec 并行拉取）
-    private readonly Dictionary<string, Task<SpecInfo?>> _specTasks = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<SpecInfo?>> _specTasks = new();
     private readonly object _specLock = new();
     // did -> 详情缓存（含 props/actions）
     private readonly Dictionary<string, DeviceDetail> _detailCache = new();
@@ -818,6 +819,19 @@ public sealed partial class MiHomeService
 
     private async Task RefreshDeviceIndexAsync()
     {
+        await _indexLock.WaitAsync();
+        try
+        {
+            await RefreshDeviceIndexCoreAsync();
+        }
+        finally
+        {
+            _indexLock.Release();
+        }
+    }
+
+    private async Task RefreshDeviceIndexCoreAsync()
+    {
         List<Dictionary<string, JsonElement>> all;
         try
         {
@@ -878,7 +892,7 @@ public sealed partial class MiHomeService
         lock (_specLock)
         {
             _specCache[specType] = info;
-            _specTasks.Remove(specType);
+            _specTasks.TryRemove(specType, out _);
         }
         return info;
     }

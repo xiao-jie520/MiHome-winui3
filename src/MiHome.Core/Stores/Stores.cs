@@ -19,6 +19,8 @@ public sealed class AppSettings
     public double UiScale { get; set; } = 1.0;
     public int TrayColumns { get; set; } = 2;
     public bool CheckUpdateEnabled { get; set; } = true;
+    /// <summary>是否每 5 秒自动刷新设备状态。默认开启。</summary>
+    public bool AutoRefresh { get; set; } = true;
     public bool WidgetsBoardEnabled { get; set; }
     public bool WidgetsBoardTopmost { get; set; }
     public double WidgetsBoardOpacity { get; set; } = 0.9;

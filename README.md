@@ -74,3 +74,15 @@ src/
 - 任务模型：Python 串行任务队列（JobExecutor）→ C# async/await
 - 暂未实现：桌面挂件（widgets board）、托盘音响音量栏、界面无级缩放（可按 Fluent 默认缩放）
 - 认证文件与 CLI 互通，本地数据目录沿用 `%LOCALAPPDATA%\MiHome-Windows\`
+
+## 更新日志
+
+### v1.0.2（修复扫码登录与设备页）
+- **修复扫码后仍显示未登录**：`serviceToken` cookie 落在 `.sts.api.mijia.tech` 域，原实现按域名从 CookieContainer 取导致漏掉；改为解析 `Set-Cookie` 响应头并按上游格式手工拼 `Cookie` 头
+- **修复响应解析**：服务端返回 gzip 明文/RC4 密文两种形态，按字节判定后解密/解压
+- **修复设备属性名**：spec URN 短名取第 4 段（原取最后一段得到版本号），开关识别、中文名、控件的范围全部恢复
+- 登录态改为本地判断 + 服务端 auth error 自动刷新 token 重试，避免死锁与误判
+- 升级 Windows App SDK 1.6 → **1.7**：修复在 Windows 11 26100 上的偶发原生堆损坏崩溃
+- 托盘改用 H.NotifyIcon 封装；`Shell_NotifyIcon` 不再阻塞 UI 线程
+- 设备卡片：点开关不再误弹详情；卡片左对齐
+- 新增「自动刷新设备状态（5 秒）」设置项（默认开启）

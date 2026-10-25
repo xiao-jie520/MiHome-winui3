@@ -43,6 +43,7 @@ public sealed partial class SettingsPage : Page
 
         MinimizeTrayToggle.IsOn = s.MinimizeToTray;
         StartMinimizedToggle.IsOn = s.StartMinimized;
+        AutoRefreshToggle.IsOn = s.AutoRefresh;
         HideNoFuncToggle.IsOn = s.HideNoFuncDevices;
         CheckUpdateToggle.IsOn = s.CheckUpdateEnabled;
         AutostartToggle.IsOn = Autostart.Get();
@@ -115,6 +116,15 @@ public sealed partial class SettingsPage : Page
         if (_loading) return;
         App.Settings.StartMinimized = StartMinimizedToggle.IsOn;
         Save();
+    }
+
+    private void AutoRefresh_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        App.Settings.AutoRefresh = AutoRefreshToggle.IsOn;
+        Save();
+        App.ShowMainToast(AutoRefreshToggle.IsOn ? "自动刷新已开启（重新进入设备页生效）" : "自动刷新已关闭",
+            InfoBarSeverity.Informational);
     }
 
     private void HideNoFunc_Toggled(object sender, RoutedEventArgs e)
