@@ -4,6 +4,8 @@
 
 不依赖 Python：原项目使用的 `mijiaAPI` Python 库（扫码登录、设备控制协议）已用 C# 完整重新实现。
 
+![登录页](docs/screenshot-login.png)
+
 ## 功能
 
 - **扫码登录**：米家 APP 扫二维码登录；凭据保存在 `~/.config/mijia-api/auth.json`，与上游 CLI 互通

@@ -27,8 +27,11 @@ public partial class App : Application
         Trace("Service done");
         try
         {
-            Settings = SettingsStore.Get();
-            Trace("Settings done");
+        Settings = SettingsStore.Get();
+        Trace("Settings done");
+        // 版本号取自程序集（csproj <Version>），供更新检查与关于页展示
+        UpdateChecker.CurrentVersion =
+            typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
         }
         catch (Exception exc)
         {

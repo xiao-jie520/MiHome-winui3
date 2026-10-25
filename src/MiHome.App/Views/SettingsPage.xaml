@@ -33,7 +33,7 @@
             </StackPanel>
 
             <TextBlock x:Name="VersionText" Margin="0,20,0,0" Opacity="0.5"
-                       Text="米家控制台 (WinUI3 重构版) v1.0.0 · 基于 MIoT 协议 · GPL-3.0" />
+                       Text="米家控制台 (WinUI3 重构版) v1.0.1 · 基于 MIoT 协议 · GPL-3.0" />
         </StackPanel>
     </ScrollViewer>
 </Page>

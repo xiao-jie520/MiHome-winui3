@@ -26,7 +26,9 @@ public sealed partial class MiHomeService
     private readonly Dictionary<string, (string Model, string SpecType, string Name)> _deviceIndex = new();
     // spec_type -> spec 内存缓存
     private readonly Dictionary<string, SpecInfo?> _specCache = new();
-    private readonly SemaphoreSlim _specLock = new(1, 1);
+    // spec_type -> 进行中的拉取任务（并发去重，不同 spec 并行拉取）
+    private readonly Dictionary<string, Task<SpecInfo?>> _specTasks = new();
+    private readonly object _specLock = new();
     // did -> 详情缓存（含 props/actions）
     private readonly Dictionary<string, DeviceDetail> _detailCache = new();
     // model -> 图标 URL 缓存
@@ -43,14 +45,8 @@ public sealed partial class MiHomeService
 
     public bool LoginStatus()
     {
-        try
-        {
-            return _api.Available();
-        }
-        catch
-        {
-            return false;
-        }
+        // 只看本地凭据是否存在：不做网络探测，避免网络抖动导致界面误判为“未登录”
+        return _api.HasAuth;
     }
 
     /// <summary>获取扫码登录数据；返回 null 表示本地凭据已刷新、无需扫码。</summary>
@@ -101,12 +97,12 @@ public sealed partial class MiHomeService
         var location = new Dictionary<string, (string Home, string Room)>();
         foreach (var home in homes)
         {
-            var homeName = home.TryGetValue("name", out var hn) ? hn.GetString() ?? "" : "";
+            var homeName = Str(home, "name");
             if (home.TryGetValue("roomlist", out var rooms) && rooms.ValueKind == JsonValueKind.Array)
             {
                 foreach (var room in rooms.EnumerateArray())
                 {
-                    var roomName = room.TryGetProperty("name", out var rn) ? rn.GetString() ?? "" : "";
+                    var roomName = room.TryGetProperty("name", out var rn) && rn.ValueKind == JsonValueKind.String ? rn.GetString() ?? "" : "";
                     if (room.TryGetProperty("dids", out var dids) && dids.ValueKind == JsonValueKind.Array)
                     {
                         foreach (var did in dids.EnumerateArray())
@@ -124,8 +120,8 @@ public sealed partial class MiHomeService
             var (homeName, roomName) = location.GetValueOrDefault(did, ("未知", "未知"));
             return new DeviceInfo(
                 Did: did,
-                Name: d.TryGetValue("name", out var n) ? n.GetString() ?? did : did,
-                Model: d.TryGetValue("model", out var m) ? m.GetString() ?? "" : "",
+                Name: Str(d, "name") is { Length: > 0 } dn ? dn : did,
+                Model: Str(d, "model"),
                 HomeName: homeName,
                 RoomName: roomName,
                 Online: d.TryGetValue("isOnline", out var o) && o.ValueKind == JsonValueKind.True,
@@ -149,7 +145,7 @@ public sealed partial class MiHomeService
             throw new ServiceError("该设备无公开的功能规格（常见于仅蓝牙连接的产品），无法提供控制面板");
         }
 
-        SpecInfo spec;
+        SpecInfo? spec;
         try
         {
             spec = await GetSpecAsync(entry.SpecType);
@@ -707,7 +703,7 @@ public sealed partial class MiHomeService
                 throw WrapError(exc, "获取家庭列表失败");
             }
             _homeIds = homes.ToDictionary(
-                h => h.TryGetValue("name", out var n) ? n.GetString() ?? "" : "",
+                h => Str(h, "name"),
                 h => h.TryGetValue("id", out var i) ? i.ToString() ?? "" : "");
         }
         return _homeIds;
@@ -736,7 +732,7 @@ public sealed partial class MiHomeService
         var idToName = homeMap.ToDictionary(kv => kv.Value, kv => kv.Key);
         return scenes.Select(s => new SceneInfo(
             SceneId: s.TryGetValue("scene_id", out var sid) ? sid.ToString() ?? "" : "",
-            Name: s.TryGetValue("name", out var n) && !string.IsNullOrEmpty(n.GetString()) ? n.GetString()! : "未命名场景",
+            Name: Str(s, "name") is { Length: > 0 } sn ? sn : "未命名场景",
             HomeId: s.TryGetValue("home_id", out var hid) ? hid.ToString() ?? homeId ?? "" : homeId ?? "",
             HomeName: idToName.TryGetValue(s.TryGetValue("home_id", out var h2) ? h2.ToString() ?? "" : "", out var hn) ? hn : "")).ToList();
     }
@@ -836,40 +832,55 @@ public sealed partial class MiHomeService
         {
             var did = d["did"].ToString();
             _deviceIndex[did] = (
-                d.TryGetValue("model", out var m) ? m.GetString() ?? "" : "",
-                d.TryGetValue("spec_type", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() ?? "" : "",
-                d.TryGetValue("name", out var n) ? n.GetString() ?? "" : "");
+                Str(d, "model"),
+                Str(d, "spec_type"),
+                Str(d, "name"));
         }
     }
 
-    private async Task<SpecInfo?> GetSpecAsync(string specType)
+    /// <summary>
+    /// 取规格：同一 spec_type 的并发请求合并为一个任务，不同 spec 并行拉取。
+    /// 原实现用信号量包住整个网络调用，会把并行的 spec 抓取串行化（首屏慢数倍）。
+    /// </summary>
+    private Task<SpecInfo?> GetSpecAsync(string specType)
     {
-        await _specLock.WaitAsync();
-        try
+        if (string.IsNullOrEmpty(specType))
+        {
+            return Task.FromResult<SpecInfo?>(null);
+        }
+        lock (_specLock)
         {
             if (_specCache.TryGetValue(specType, out var cached))
             {
-                return cached;
+                return Task.FromResult(cached);
             }
-            SpecInfo? info = null;
-            if (!string.IsNullOrEmpty(specType))
+            if (_specTasks.TryGetValue(specType, out var running))
             {
-                try
-                {
-                    info = await _specService.GetDeviceInfoAsync(specType);
-                }
-                catch
-                {
-                    info = null; // 个别规格在 miot-spec.org 不存在，按无能力处理
-                }
+                return running;
             }
-            _specCache[specType] = info;
-            return info;
+            var task = LoadSpecAsync(specType);
+            _specTasks[specType] = task;
+            return task;
         }
-        finally
+    }
+
+    private async Task<SpecInfo?> LoadSpecAsync(string specType)
+    {
+        SpecInfo? info = null;
+        try
         {
-            _specLock.Release();
+            info = await _specService.GetDeviceInfoAsync(specType);
         }
+        catch
+        {
+            info = null; // 个别规格在 miot-spec.org 不存在，按无能力处理
+        }
+        lock (_specLock)
+        {
+            _specCache[specType] = info;
+            _specTasks.Remove(specType);
+        }
+        return info;
     }
 
     private async Task<Dictionary<string, SpecInfo?>> SpecsForAsync(List<string> dids)
@@ -885,45 +896,37 @@ public sealed partial class MiHomeService
                 // 列表拉取失败时已有索引仍然可用
             }
         }
-        var result = new Dictionary<string, SpecInfo?>();
-        var toFetch = new List<string>();
+
+        var pending = new Dictionary<string, Task<SpecInfo?>>();
         foreach (var did in dids)
         {
             var specType = _deviceIndex.GetValueOrDefault(did).SpecType;
-            if (string.IsNullOrEmpty(specType))
+            if (!string.IsNullOrEmpty(specType) && !pending.ContainsKey(specType))
             {
-                result[did] = null;
-            }
-            else if (_specCache.TryGetValue(specType, out var cached))
-            {
-                result[did] = cached;
-            }
-            else
-            {
-                toFetch.Add(specType);
+                pending[specType] = GetSpecAsync(specType);
             }
         }
-        toFetch = toFetch.Distinct().ToList();
-        // spec 并发拉取（目标是 miot-spec.org 的独立请求，无会话竞争）
-        if (toFetch.Count > 0)
+        if (pending.Count > 0)
         {
-            var tasks = toFetch.Select(async st => (SpecType: st, Info: await GetSpecAsync(st)));
-            var fetched = await Task.WhenAll(tasks);
-            foreach (var (specType, info) in fetched)
-            {
-                _specCache.TryAdd(specType, info);
-            }
-            foreach (var did in dids)
-            {
-                if (!result.ContainsKey(did))
-                {
-                    var specType = _deviceIndex.GetValueOrDefault(did).SpecType;
-                    result[did] = _specCache.GetValueOrDefault(specType);
-                }
-            }
+            await Task.WhenAll(pending.Values);
+        }
+
+        var result = new Dictionary<string, SpecInfo?>();
+        foreach (var did in dids)
+        {
+            var specType = _deviceIndex.GetValueOrDefault(did).SpecType;
+            result[did] = string.IsNullOrEmpty(specType)
+                ? null
+                : pending.TryGetValue(specType, out var task) ? task.Result : _specCache.GetValueOrDefault(specType);
         }
         return result;
     }
+
+    /// <summary>安全取字符串字段：JSON null / 缺失 / 非字符串一律返回空串。</summary>
+    private static string Str(Dictionary<string, JsonElement> dict, string key)
+        => dict.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? ""
+            : "";
 
     private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
     {

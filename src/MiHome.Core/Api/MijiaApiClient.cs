@@ -180,36 +180,48 @@ public sealed class MijiaApiClient : IDisposable
     {
         var baseUri = new Uri("https://api.mijia.tech/");
         var accountUri = new Uri("https://account.xiaomi.com/");
-        void Seed(Uri uri, string name, string value)
+
+        // 用 SetCookies 覆盖写：重新登录后 token 已变，旧 cookie 必须被替换，
+        // 否则同名 Cookie 添加会抛异常（被吞掉）而残留的是过期 token。
+        void Seed(Uri uri, params (string Name, string Value)[] cookies)
         {
-            try { _cookies.Add(uri, new Cookie(name, value)); }
-            catch { /* 已存在或非法则忽略 */ }
+            try
+            {
+                var text = string.Join("; ", cookies
+                    .Where(c => !string.IsNullOrEmpty(c.Value))
+                    .Select(c => $"{c.Name}={c.Value}"));
+                if (text.Length > 0)
+                {
+                    _cookies.SetCookies(uri, text);
+                }
+            }
+            catch
+            {
+                // 非法 cookie 值直接忽略，不阻断登录流程
+            }
         }
+
         var serviceToken = AuthStr("serviceToken") ?? "";
         var cUserId = AuthStr("cUserId") ?? AuthStr("userId") ?? "";
         var isDst = TimeZoneInfo.Local.IsDaylightSavingTime(DateTime.Now) ? 1 : 0;
-        string cookie =
-            $"cUserId={cUserId};" +
-            $"yetAnotherServiceToken={serviceToken};" +
-            $"serviceToken={serviceToken};" +
-            $"timezone_id={TimeZoneInfo.Local.Id};" +
-            $"timezone={GmtOffset()};" +
-            $"is_daylight={isDst};" +
-            $"dst_offset={isDst * 60 * 60 * 1000};" +
-            $"channel=MI_APP_STORE;" +
-            $"countryCode=CN;" +
-            $"PassportDeviceId={DeviceId};" +
-            $"locale={Locale}";
-        Seed(baseUri, "serviceToken", serviceToken);
-        Seed(baseUri, "yetAnotherServiceToken", serviceToken);
-        Seed(baseUri, "cUserId", cUserId);
-        Seed(baseUri, "userId", AuthStr("userId") ?? "");
-        Seed(baseUri, "PassportDeviceId", DeviceId);
-        Seed(baseUri, "channel", "MI_APP_STORE");
-        Seed(baseUri, "locale", Locale);
-        Seed(accountUri, "deviceId", DeviceId);
-        Seed(accountUri, "userId", AuthStr("userId") ?? "");
-        _ = cookie;
+
+        Seed(baseUri,
+            ("cUserId", cUserId),
+            ("yetAnotherServiceToken", serviceToken),
+            ("serviceToken", serviceToken),
+            ("timezone_id", TimeZoneInfo.Local.Id),
+            ("timezone", GmtOffset()),
+            ("is_daylight", isDst.ToString()),
+            ("dst_offset", (isDst * 60 * 60 * 1000).ToString()),
+            ("channel", "MI_APP_STORE"),
+            ("countryCode", "CN"),
+            ("PassportDeviceId", DeviceId),
+            ("locale", Locale));
+
+        Seed(accountUri,
+            ("deviceId", DeviceId),
+            ("userId", AuthStr("userId") ?? ""),
+            ("passToken", AuthStr("passToken") ?? ""));
     }
 
     private void AddServiceHeaders(HttpRequestMessage req)
@@ -227,8 +239,32 @@ public sealed class MijiaApiClient : IDisposable
     private static Dictionary<string, object?> ParseServiceRet(string text)
     {
         var cleaned = text.Replace("&&&START&&&", "").Trim();
-        return JsonSerializer.Deserialize<Dictionary<string, object?>>(cleaned) ?? new();
+        using var doc = JsonDocument.Parse(cleaned);
+        var dict = new Dictionary<string, object?>();
+        foreach (var prop in doc.RootElement.EnumerateObject())
+        {
+            dict[prop.Name] = UnwrapJson(prop.Value);
+        }
+        return dict;
     }
+
+    /// <summary>
+    /// 把 JsonElement 展开成原生 CLR 值（string / long / double / bool / null / 字典 / 列表）。
+    /// 上游 ParseServiceRet 返回的实际就是 Python 原生对象，若保留 JsonElement
+    /// 会让 Convert.ToInt64 / 字符串插值在调用处抛 InvalidCastException。
+    /// </summary>
+    private static object? UnwrapJson(JsonElement el) => el.ValueKind switch
+    {
+        JsonValueKind.String => el.GetString(),
+        JsonValueKind.Number => el.TryGetInt64(out var l) ? l : el.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null or JsonValueKind.Undefined => null,
+        JsonValueKind.Object => el.EnumerateObject()
+            .ToDictionary(p => p.Name, p => UnwrapJson(p.Value)),
+        JsonValueKind.Array => el.EnumerateArray().Select(UnwrapJson).ToList(),
+        _ => el.GetRawText(),
+    };
 
     /// <summary>serviceLogin 取 location；code==0 时跟随 location 收下 cookie 即刷新成功。</summary>
     private async Task<Dictionary<string, object?>> GetLocationAsync()
@@ -249,10 +285,11 @@ public sealed class MijiaApiClient : IDisposable
         }
         var data = ParseServiceRet(body);
 
-        if (data.TryGetValue("code", out var codeEl) && Convert.ToInt64(codeEl) == 0 && data.TryGetValue("location", out var loc))
+        if (data.TryGetValue("code", out var codeEl) && Convert.ToInt64(codeEl) == 0 &&
+            data.TryGetValue("location", out var loc) && loc?.ToString() is { Length: > 0 } locUrl)
         {
             // 跟随 location 完成服务登录，收下 serviceToken cookie
-            var follow = new HttpRequestMessage(HttpMethod.Get, loc.ToString());
+            var follow = new HttpRequestMessage(HttpMethod.Get, locUrl);
             follow.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
             var followResp = await _http.SendAsync(follow);
             var followBody = await followResp.Content.ReadAsStringAsync();
@@ -277,7 +314,8 @@ public sealed class MijiaApiClient : IDisposable
         }
 
         // location 携带 query 时返回其参数（含 code != 0）
-        if (data.TryGetValue("location", out var locStr) && Uri.TryCreate(locStr.ToString(), UriKind.Absolute, out var uri))
+        if (data.TryGetValue("location", out var locStr) && locStr?.ToString() is { Length: > 0 } locText &&
+            Uri.TryCreate(locText, UriKind.Absolute, out var uri))
         {
             var q = System.Web.HttpUtility.ParseQueryString(uri.Query);
             var dict = new Dictionary<string, object?>();
@@ -291,6 +329,16 @@ public sealed class MijiaApiClient : IDisposable
             return dict;
         }
         return data;
+    }
+
+    /// <summary>凭据是否存在（不发起网络请求，界面判断登录态用）。</summary>
+    public bool HasAuth
+    {
+        get
+        {
+            string[] requiredKeys = { "ssecurity", "serviceToken" };
+            return AuthData.Count > 0 && requiredKeys.All(k => AuthData.ContainsKey(k));
+        }
     }
 
     /// <summary>凭据仍有效则跳过刷新。</summary>
@@ -384,7 +432,7 @@ public sealed class MijiaApiClient : IDisposable
     /// <summary>长轮询等待用户扫码并完成登录（可达两分钟，须后台调用）。</summary>
     public async Task CompleteQrLoginAsync(Dictionary<string, object?> loginData)
     {
-        if (!loginData.TryGetValue("lp", out var lp))
+        if (!loginData.TryGetValue("lp", out var lp) || lp?.ToString() is not { Length: > 0 } lpUrl)
         {
             throw new LoginException("登录数据缺少 lp 字段");
         }
@@ -395,7 +443,7 @@ public sealed class MijiaApiClient : IDisposable
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
         };
         using var session = new HttpClient(sessionHandler) { Timeout = TimeSpan.FromSeconds(120) };
-        var req = new HttpRequestMessage(HttpMethod.Get, lp.ToString());
+        var req = new HttpRequestMessage(HttpMethod.Get, lpUrl);
         req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         var lpResp = await session.SendAsync(req);
         var lpBody = await lpResp.Content.ReadAsStringAsync();
@@ -416,14 +464,24 @@ public sealed class MijiaApiClient : IDisposable
                 AuthData[key] = JsonSerializer.SerializeToElement(v);
             }
         }
-        if (lpData.TryGetValue("location", out var callback))
+        if (lpData.TryGetValue("location", out var callback) && callback?.ToString() is { Length: > 0 } callbackUrl)
         {
-            var cbReq = new HttpRequestMessage(HttpMethod.Get, callback.ToString());
+            var cbReq = new HttpRequestMessage(HttpMethod.Get, callbackUrl);
             cbReq.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
             await session.SendAsync(cbReq);
-            foreach (var c in sessionHandler.CookieContainer.GetCookies(new Uri("https://account.xiaomi.com/")).Cast<Cookie>())
+            // 服务登录成功后 cookie 可能落在 xiaomi.com / sts.api.io.mi.com 等多个域，
+            // 全部收下（与 requests Session.cookies.get_dict() 一致）
+            foreach (var uri in new[]
             {
-                AuthData[c.Name] = JsonSerializer.SerializeToElement(c.Value);
+                "https://account.xiaomi.com/",
+                "https://sts.api.io.mi.com/",
+                "https://api.mijia.tech/",
+            })
+            {
+                foreach (var c in sessionHandler.CookieContainer.GetCookies(new Uri(uri)).Cast<Cookie>())
+                {
+                    AuthData[c.Name] = JsonSerializer.SerializeToElement(c.Value);
+                }
             }
         }
         AuthData["expireTime"] = JsonSerializer.SerializeToElement(

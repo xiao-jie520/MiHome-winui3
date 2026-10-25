@@ -18,7 +18,7 @@
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <DefaultLanguage>zh-CN</DefaultLanguage>
     <AssemblyName>MiHome</AssemblyName>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>

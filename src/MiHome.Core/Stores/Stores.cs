@@ -284,7 +284,9 @@ public sealed class ScheduleEngine
 /// <summary>GitHub Releases 新版本检测。</summary>
 public static class UpdateChecker
 {
-    public const string CurrentVersion = "1.0.0";
+    /// <summary>当前版本，由 App 启动时用程序集版本覆盖。</summary>
+    public static string CurrentVersion { get; set; } = "1.0.0";
+
     public const string RepoUrl = "https://github.com/huanyuejue/MiHome-Windows";
 
     public sealed record UpdateInfo(string LatestVersion, string Url, string Notes);
@@ -320,6 +322,7 @@ public static class UpdateChecker
 }
 
 /// <summary>开机自启动（注册表 HKCU Run）。</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public static class Autostart
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
